@@ -38,8 +38,9 @@ from .file_utils import (
 )
 from .modeling_outputs import (
     BaseModelOutput,
+    BaseModelOutputWithLength,
     CausalLMOutput,
-    CTCOutput
+    CTCModelOutput
 )
 from .modeling_utils import (
     PreTrainedModel,
@@ -208,9 +209,13 @@ class Conv2dSubsampling(nn.Module):
     """
     # TODO: make configurable (subsampling factor 4 / 6 / 8)
 
-    def __init__(self, idim, odim, dropout_rate, pos_enc=None):
+    def __init__(self, config):
         """Construct an Conv2dSubsampling object."""
         super(Conv2dSubsampling, self).__init__()
+        idim = config.input_dim
+        odim = config.hidden_size
+        dropout_rate = config.hidden_dropout_prob
+
         self.conv = nn.Sequential(
             nn.Conv2d(1, odim, 3, 2),
             nn.ReLU(),
@@ -219,10 +224,10 @@ class Conv2dSubsampling(nn.Module):
         )
         self.out = nn.Sequential(
             nn.Linear(odim * (((idim - 1) // 2 - 1) // 2), odim),
-            pos_enc if pos_enc is not None else PositionalEncoding(odim, dropout_rate),
+            PositionalEncoding(odim, dropout_rate),
         )
 
-    def forward(self, x, x_mask):
+    def forward(self, input_ids, attention_mask=None):
         """Subsample x.
         Args:
             x (torch.Tensor): Input tensor (#batch, time, idim).
@@ -233,13 +238,17 @@ class Conv2dSubsampling(nn.Module):
             torch.Tensor: Subsampled mask (#batch, 1, time'),
                 where time' = time // 4.
         """
-        x = x.unsqueeze(1)  # (b, c, t, f)
+        x = input_ids.unsqueeze(1)  # (b, c, t, f)
         x = self.conv(x)
         b, c, t, f = x.size()
         x = self.out(x.transpose(1, 2).contiguous().view(b, t, c * f))
-        if x_mask is None:
+        if attention_mask is None:
             return x, None
-        return x, x_mask[:, :, :-2:2][:, :, :-2:2]
+        return x, attention_mask[:, :-2:2][:, :-2:2]
+
+
+class SpeechBertEncoder(BertEncoder):
+    pass
 
 
 class SpeechBertPredictionHeadTransform(nn.Module):
@@ -468,7 +477,7 @@ class SpeechBertModel(SpeechBertPreTrainedModel):
     @add_code_sample_docstrings(
         tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="speechbert-base-uncased",
-        output_type=BaseModelOutput,
+        output_type=BaseModelOutputWithLength,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
@@ -505,6 +514,10 @@ class SpeechBertModel(SpeechBertPreTrainedModel):
         if token_type_ids is None:
             token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
+        embedding_output, attention_mask = self.embeddings(
+            input_ids=input_ids, attention_mask=attention_mask
+        )
+
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, input_shape, device)
@@ -516,9 +529,6 @@ class SpeechBertModel(SpeechBertPreTrainedModel):
         # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
-        embedding_output = self.embeddings(
-            input_ids=input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
-        )
         encoder_outputs = self.encoder(
             embedding_output,
             attention_mask=extended_attention_mask,
@@ -528,12 +538,14 @@ class SpeechBertModel(SpeechBertPreTrainedModel):
             return_dict=return_dict,
         )
         sequence_output = encoder_outputs[0]
+        output_lengths = attention_mask.sum(-1)
 
         if not return_dict:
-            return (sequence_output,) + encoder_outputs[1:]
+            return (sequence_output, output_lengths) + encoder_outputs[1:]
 
-        return BaseModelOutput(
+        return BaseModelOutputWithLength(
             last_hidden_state=sequence_output,
+            output_lengths=output_lengths,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
         )
@@ -643,8 +655,10 @@ class SpeechBertForPreTraining(SpeechBertPreTrainedModel):
         )
 
 
+# import ipdb; ipdb.set_trace()
+
 @add_start_docstrings("""SpeechBert Model with a `ctc prediction` head on top. """, SPEECHBERT_START_DOCSTRING)
-class SpeechBertForCTC(SpeechBertPreTrainedModel):
+class SpeechBertModelForCTC(SpeechBertPreTrainedModel):
 
     authorized_missing_keys = [r"position_ids", r"predictions.decoder.bias"]
 
@@ -664,7 +678,7 @@ class SpeechBertForCTC(SpeechBertPreTrainedModel):
     @add_code_sample_docstrings(
         tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="speechbert-base-uncased",
-        output_type=CTCOutput,
+        output_type=CTCModelOutput,
         config_class=_CONFIG_FOR_DOC,
     )
     def forward(
@@ -715,16 +729,16 @@ class SpeechBertForCTC(SpeechBertPreTrainedModel):
             # Use the deterministic CuDNN implementation of CTC loss to avoid
             #  [issue#17798](https://github.com/pytorch/pytorch/issues/17798)
             with torch.backends.cudnn.flags(deterministic=True):
-                log_probs = prediction_scores.log_softmax(-1)
-                pred_lengths = _  # TODO
-                target_lengths = (labels != )
-                ctc_loss = loss_fct(log_probs, labels)
+                log_probs = prediction_scores.log_softmax(-1).transpose(0, 1)
+                pred_lengths = outputs[1]
+                target_lengths = (labels != -100).sum(-1)
+                ctc_loss = loss_fct(log_probs, labels, pred_lengths, target_lengths)
 
         if not return_dict:
             output = (prediction_scores,) + outputs[2:]
             return ((ctc_loss,) + output) if ctc_loss is not None else output
 
-        return CTCOutput(
+        return CTCModelOutput(
             loss=ctc_loss,
             logits=prediction_scores,
             hidden_states=outputs.hidden_states,

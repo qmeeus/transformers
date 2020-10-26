@@ -83,15 +83,17 @@ class SpeechBertConfig(PretrainedConfig):
         >>> # Accessing the model configuration
         >>> configuration = model.config
     """
-    model_type = "bert"
+
+    model_type = "speechbert"
 
     def __init__(
         self,
-        vocab_size=30522,
-        hidden_size=768,
-        num_hidden_layers=12,
-        num_attention_heads=12,
-        intermediate_size=3072,
+        input_dim=83,
+        vocab_size=17346,
+        hidden_size=512,  # 768
+        num_hidden_layers=6,  # 12
+        num_attention_heads=8,  # 12
+        intermediate_size=2048,  # 3072
         hidden_act="gelu",
         hidden_dropout_prob=0.1,
         attention_probs_dropout_prob=0.1,
@@ -106,6 +108,7 @@ class SpeechBertConfig(PretrainedConfig):
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
 
+        self.input_dim = input_dim
         self.blank_token_id = blank_token_id
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
@@ -120,3 +123,4 @@ class SpeechBertConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.layer_norm_eps = layer_norm_eps
         self.gradient_checkpointing = gradient_checkpointing
+        self.tie_word_embeddings = False
