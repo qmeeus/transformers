@@ -1,5 +1,6 @@
 import os
 import logging
+import math
 from dataclasses import dataclass, field
 from glob import glob
 from typing import Optional
@@ -8,6 +9,7 @@ from torch.utils.data import ConcatDataset
 
 from transformers import (
     AutoTokenizer,
+    EvalPrediction,
     HfArgumentParser,
     PreTrainedTokenizer,
     Trainer,
@@ -113,6 +115,16 @@ def get_dataset(
         return _dataset(args.train_data_file)
 
 
+def count_parameters(module):
+    n_params, n_trainable = 0, 0
+    for param in module.parameters():
+        n_params += param.numel()
+        if param.requires_grad:
+            n_trainable += param.numel()
+    return n_params, n_trainable
+
+
+
 def main():
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
@@ -189,6 +201,9 @@ def main():
 
     # model.resize_token_embeddings(len(tokenizer))
 
+    logger.info(model)
+    logger.info("Total parameters: {:,} Trainable: {:,}".format(*count_parameters(model)))
+
     if data_args.block_size <= 0:
         data_args.block_size = tokenizer.max_len
         # Our input block size will be the max possible for the model
@@ -211,6 +226,22 @@ def main():
 
     data_collator = DataCollatorForAsr(tokenizer=tokenizer)
 
+    # You can define your custom compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with a
+    # predictions and label_ids field) and has to return a dictionary string to float.
+    def compute_metrics(p: EvalPrediction):
+        import ipdb; ipdb.set_trace()
+        preds = p.predictions[0] if isinstance(p.predictions, tuple) else p.predictions
+        preds = np.squeeze(preds) if is_regression else np.argmax(preds, axis=1)
+        if data_args.task_name is not None:
+            result = metric.compute(predictions=preds, references=p.label_ids)
+            if len(result) > 1:
+                result["combined_score"] = np.mean(list(result.values())).item()
+            return result
+        elif is_regression:
+            return {"mse": ((preds - p.label_ids) ** 2).mean().item()}
+        else:
+            return {"accuracy": (preds == p.label_ids).astype(np.float32).mean().item()}
+
     # Initialize our Trainer
     trainer = Trainer(
         model=model,
@@ -218,7 +249,7 @@ def main():
         data_collator=data_collator,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        prediction_loss_only=True,
+        compute_metrics=compute_metrics,
     )
 
     # Training
