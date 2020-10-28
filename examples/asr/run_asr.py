@@ -98,7 +98,7 @@ def get_dataset(
 ):
     def _dataset(filepath):
         return AsrDataset(
-            filepath, 
+            filepath,
             tokenizer,
             longest_first=args.longest_first,
             overwrite_cache=args.overwrite_cache,
@@ -198,8 +198,8 @@ def main():
     # Get datasets
 
     train_dataset = (
-        get_dataset(data_args, tokenizer=tokenizer, cache_dir=model_args.cache_dir) 
-        if training_args.do_train 
+        get_dataset(data_args, tokenizer=tokenizer, cache_dir=model_args.cache_dir)
+        if training_args.do_train
         else None
     )
 
@@ -234,8 +234,6 @@ def main():
         # so that you can share your model easily on huggingface.co/models =)
         if trainer.is_world_master():
             tokenizer.save_pretrained(training_args.output_dir)
-
-    import ipdb; ipdb.set_trace()
 
     # Evaluation
     results = {}
