@@ -15,8 +15,8 @@
 # limitations under the License.
 """ SPEECHBERT model configuration """
 
-from .configuration_utils import PretrainedConfig
-from .utils import logging
+from transformers.configuration_utils import PretrainedConfig
+from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)
@@ -88,8 +88,8 @@ class SpeechBertConfig(PretrainedConfig):
 
     def __init__(
         self,
-        input_dim=83,
-        vocab_size=17346,
+        input_dim=80,
+        vocab_size=5005,
         hidden_size=512,  # 768
         num_hidden_layers=6,  # 12
         num_attention_heads=8,  # 12

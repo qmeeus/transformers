@@ -27,29 +27,28 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CTCLoss
 
-from .activations import ACT2FN
-from .configuration_speechbert import SpeechBertConfig # TODO
-from .file_utils import (
+from transformers.activations import ACT2FN
+from transformers.file_utils import (
     ModelOutput,
     add_code_sample_docstrings,
     add_start_docstrings,
-    add_start_docstrings_to_callable,
+    add_start_docstrings_to_model_forward,
     replace_return_docstrings,
 )
-from .modeling_outputs import (
+from transformers.modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithLength,
     CausalLMOutput,
     CTCModelOutput
 )
-from .modeling_utils import (
+from transformers.modeling_utils import (
     PreTrainedModel,
     apply_chunking_to_forward,
     find_pruneable_heads_and_indices,
     prune_linear_layer,
 )
 
-from .modeling_bert import (
+from transformers.modeling_bert import (
     BertLayer,
     BertEncoder,
     BertLMPredictionHead,
@@ -57,7 +56,9 @@ from .modeling_bert import (
 
 )
 
-from .utils import logging
+from .configuration_speechbert import SpeechBertConfig # TODO
+
+from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)
@@ -221,9 +222,11 @@ class Conv2dSubsampling(nn.Module):
             nn.ReLU(),
             nn.Conv2d(odim, odim, 3, 2),
             nn.ReLU(),
+            nn.Conv2d(odim, odim, 3, 2),
+            nn.ReLU(),
         )
         self.out = nn.Sequential(
-            nn.Linear(odim * (((idim - 1) // 2 - 1) // 2), odim),
+            nn.Linear(odim * ((((idim - 1) // 2 - 1) // 2 - 1) // 2), odim),
             PositionalEncoding(odim, dropout_rate),
         )
 
@@ -244,7 +247,7 @@ class Conv2dSubsampling(nn.Module):
         x = self.out(x.transpose(1, 2).contiguous().view(b, t, c * f))
         if attention_mask is None:
             return x, None
-        return x, attention_mask[:, :-2:2][:, :-2:2]
+        return x, attention_mask[:, :-2:2][:, :-2:2][:, :-2:2]
 
 
 class SpeechBertEncoder(BertEncoder):
@@ -473,7 +476,7 @@ class SpeechBertModel(SpeechBertPreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
-    @add_start_docstrings_to_callable(SPEECHBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
+    @add_start_docstrings_to_model_forward(SPEECHBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
         tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="speechbert-base-uncased",
@@ -568,7 +571,7 @@ class SpeechBertForPreTraining(SpeechBertPreTrainedModel):
     def get_output_embeddings(self):
         return self.cls.predictions.decoder
 
-    @add_start_docstrings_to_callable(SPEECHBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
+    @add_start_docstrings_to_model_forward(SPEECHBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @replace_return_docstrings(output_type=SpeechBertForPreTrainingOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
@@ -674,7 +677,7 @@ class SpeechBertModelForCTC(SpeechBertPreTrainedModel):
     def get_output_embeddings(self):
         return self.cls.predictions.decoder
 
-    @add_start_docstrings_to_callable(SPEECHBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
+    @add_start_docstrings_to_model_forward(SPEECHBERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
         tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="speechbert-base-uncased",

@@ -7,12 +7,13 @@ from typing import Dict, List, Optional
 from operator import itemgetter
 from kaldiio import load_mat
 from filelock import FileLock
+import multiprocessing as mp
 
 from torch.utils.data import Dataset
 from torch.nn import functional as F
 
-from ...tokenization_utils import PreTrainedTokenizer
-from ...utils import logging
+from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.utils import logging
 
 
 logger = logging.get_logger(__name__)
@@ -27,6 +28,7 @@ class AsrDataset(Dataset):
         longest_first=False,
         overwrite_cache=False,
         cache_dir: Optional[str] = None,
+        njobs=1
     ):
 
         assert os.path.isfile(filepath), f"Input file path {filepath} not found"
@@ -39,6 +41,8 @@ class AsrDataset(Dataset):
                 filename
             )
         )
+
+        self.tokenizer = tokenizer
 
         # Make sure only the first process in distributed training processes the dataset,
         # and the others will use the cache.
@@ -72,14 +76,16 @@ class AsrDataset(Dataset):
                     sort_key = itemgetter(0)
                 
                 keys, metadata = zip(*sorted(metadata["utts"].items(), key=itemgetter(0)))
-
+                
                 self.features = []
                 self.labels = []
                 for example in metadata:
-                    self.features.append(load_mat(example["input"][0]["feat"]))
-                    self.labels.append(tokenizer.convert_tokens_to_ids(tokenizer.tokenize(
-                        example["output"][0]["text"]
-                    )))
+                    self.features.append(self.load_features(example))
+                    self.labels.append(self.load_target(example))
+                
+                # with mp.Pool(njobs) as pool:
+                #     self.features = pool.map(self.load_features, metadata)
+                #     self.labels = pool.map(self.load_target, metadata)
 
                 start = time.time()
                 with open(cached_features_file, "wb") as handle:
@@ -95,7 +101,7 @@ class AsrDataset(Dataset):
 
         self.input_dim = self.features[0].shape[-1]
         self.output_dim = tokenizer.vocab_size
-        
+        del self.tokenizer        
 
     def __len__(self):
         return len(self.features)
@@ -105,3 +111,12 @@ class AsrDataset(Dataset):
         attention_mask = torch.ones(len(input_ids), dtype=torch.long)
         labels = torch.tensor(self.labels[idx], dtype=torch.long)
         return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+
+    def load_target(self, example):
+        return self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(
+            example["output"][0]["text"]
+        ))
+
+
+    def load_features(self, example):
+        return load_mat(example["input"][0]["feat"])
