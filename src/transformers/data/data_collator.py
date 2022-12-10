@@ -610,7 +610,6 @@ class DataCollatorForLanguageModeling(DataCollatorMixin):
     """
     Data collator used for language modeling. Inputs are dynamically padded to the maximum length of a batch if they
     are not all of the same length.
-
     Args:
         tokenizer ([`PreTrainedTokenizer`] or [`PreTrainedTokenizerFast`]):
             The tokenizer used for encoding the data.
@@ -763,6 +762,10 @@ class DataCollatorForLanguageModeling(DataCollatorMixin):
             special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
         else:
             special_tokens_mask = special_tokens_mask.bool()
+
+        if self.tokenizer._pad_token is not None:
+            padding_mask = labels.eq(self.tokenizer.pad_token_id)
+            probability_matrix.masked_fill_(padding_mask, value=0.0)
 
         probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
         masked_indices = torch.bernoulli(probability_matrix).bool()
