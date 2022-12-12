@@ -17,7 +17,8 @@ Feature extractor class for Whisper
 """
 
 from typing import List, Optional, Union
-
+import json
+from pprint import pformat
 import numpy as np
 from numpy.fft import fft
 
@@ -82,6 +83,10 @@ class WhisperFeatureExtractor(SequenceFeatureExtractor):
         self.nb_max_frames = self.n_samples // hop_length
         self.sampling_rate = sampling_rate
         self.mel_filters = self.get_mel_filters(sampling_rate, n_fft, n_mels=feature_size)
+
+    def __repr__(self):
+        obj = json.loads(self.to_json_string())
+        return f"{self.__class__.__name__} {pformat(obj, compact=True, width=160)}"
 
     def get_mel_filters(self, sr, n_fft, n_mels=128, dtype=np.float32):
         # Initialize the weights
