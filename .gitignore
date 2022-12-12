@@ -1,4 +1,7 @@
 # Initially taken from Github's Python gitignore file
+examples/nobackup/
+exp/
+output/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
