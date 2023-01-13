@@ -22,7 +22,7 @@ import shutil
 import sys
 import warnings
 from collections import OrderedDict
-from functools import lru_cache, wraps
+from functools import lru_cache
 from itertools import chain
 from types import ModuleType
 from typing import Any
@@ -596,11 +596,11 @@ def is_spacy_available():
 
 
 def is_tensorflow_text_available():
-    return importlib.util.find_spec("tensorflow_text") is not None
+    return is_tf_available() and importlib.util.find_spec("tensorflow_text") is not None
 
 
 def is_keras_nlp_available():
-    return importlib.util.find_spec("keras_nlp") is not None
+    return is_tensorflow_text_available() and importlib.util.find_spec("keras_nlp") is not None
 
 
 def is_in_notebook():
@@ -726,7 +726,7 @@ def is_sudachi_available():
 
 
 def is_jumanpp_available():
-    return (importlib.util.find_spec("pyknp") is not None) and (shutil.which("jumanpp") is not None)
+    return (importlib.util.find_spec("rhoknp") is not None) and (shutil.which("jumanpp") is not None)
 
 
 # docstyle-ignore
@@ -1037,30 +1037,6 @@ class DummyObject(type):
         if key.startswith("_") and key != "_from_config":
             return super().__getattribute__(key)
         requires_backends(cls, cls._backends)
-
-
-def torch_required(func):
-    # Chose a different decorator name than in tests so it's clear they are not the same.
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        if is_torch_available():
-            return func(*args, **kwargs)
-        else:
-            raise ImportError(f"Method `{func.__name__}` requires PyTorch.")
-
-    return wrapper
-
-
-def tf_required(func):
-    # Chose a different decorator name than in tests so it's clear they are not the same.
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        if is_tf_available():
-            return func(*args, **kwargs)
-        else:
-            raise ImportError(f"Method `{func.__name__}` requires TF.")
-
-    return wrapper
 
 
 def is_torch_fx_proxy(x):
