@@ -167,3 +167,6 @@ tags
 
 # DS_Store (MacOS)
 .DS_Store
+
+# ruff
+.ruff_cache
