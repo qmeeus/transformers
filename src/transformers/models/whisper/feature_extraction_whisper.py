@@ -15,10 +15,9 @@
 """
 Feature extractor class for Whisper
 """
+import copy
+from typing import Any, Dict, List, Optional, Union
 
-from typing import List, Optional, Union
-import json
-from pprint import pformat
 import numpy as np
 from numpy.fft import fft
 
@@ -328,3 +327,16 @@ class WhisperFeatureExtractor(SequenceFeatureExtractor):
             padded_inputs = padded_inputs.convert_to_tensors(return_tensors)
 
         return padded_inputs
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Serializes this instance to a Python dictionary.
+
+        Returns:
+            `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance.
+        """
+        output = copy.deepcopy(self.__dict__)
+        output["feature_extractor_type"] = self.__class__.__name__
+        if "mel_filters" in output:
+            del output["mel_filters"]
+        return output
