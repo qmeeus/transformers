@@ -83,11 +83,6 @@ class WhisperFeatureExtractor(SequenceFeatureExtractor):
         self.sampling_rate = sampling_rate
         self.mel_filters = self.get_mel_filters(sampling_rate, n_fft, n_mels=feature_size)
 
-    def __repr__(self):
-        obj = json.loads(self.to_json_string())
-        obj["mel_filters"] = "< array of shape {} >".format(np.shape(obj["mel_filters"]))
-        return f"{self.__class__.__name__} {pformat(obj, compact=True, width=160)}"
-
     def get_mel_filters(self, sr, n_fft, n_mels=128, dtype=np.float32):
         # Initialize the weights
         n_mels = int(n_mels)
