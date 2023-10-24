@@ -25,7 +25,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from ...activations import ACT2FN
-from ...deepspeed import is_deepspeed_zero3_enabled
+from ...integrations.deepspeed import is_deepspeed_zero3_enabled
 from ...modeling_outputs import (
     BaseModelOutput,
     CausalLMOutput,
@@ -587,7 +587,7 @@ class Data2VecAudioEncoder(nn.Module):
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
-            dropout_probability = np.random.uniform(0, 1)
+            dropout_probability = torch.rand([])
 
             skip_the_layer = True if self.training and (dropout_probability < self.config.layerdrop) else False
             if not skip_the_layer or deepspeed_zero3_is_enabled:
@@ -689,7 +689,6 @@ class Data2VecAudioPreTrainedModel(PreTrainedModel):
     config_class = Data2VecAudioConfig
     base_model_prefix = "data2vec_audio"
     main_input_name = "input_values"
-    _keys_to_ignore_on_load_missing = [r"position_ids"]
     supports_gradient_checkpointing = True
 
     def _init_weights(self, module):
@@ -992,7 +991,7 @@ class Data2VecAudioForCTC(Data2VecAudioPreTrainedModel):
         not be updated during training.
         """
         warnings.warn(
-            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5."
+            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5. "
             "Please use the equivalent `freeze_feature_encoder` method instead.",
             FutureWarning,
         )
@@ -1117,7 +1116,7 @@ class Data2VecAudioForSequenceClassification(Data2VecAudioPreTrainedModel):
         not be updated during training.
         """
         warnings.warn(
-            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5."
+            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5. "
             "Please use the equivalent `freeze_feature_encoder` method instead.",
             FutureWarning,
         )
@@ -1238,7 +1237,7 @@ class Data2VecAudioForAudioFrameClassification(Data2VecAudioPreTrainedModel):
         not be updated during training.
         """
         warnings.warn(
-            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5."
+            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5. "
             "Please use the equivalent `freeze_feature_encoder` method instead.",
             FutureWarning,
         )
@@ -1404,7 +1403,7 @@ class Data2VecAudioForXVector(Data2VecAudioPreTrainedModel):
         not be updated during training.
         """
         warnings.warn(
-            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5."
+            "The method `freeze_feature_extractor` is deprecated and will be removed in Transformers v5. "
             "Please use the equivalent `freeze_feature_encoder` method instead.",
             FutureWarning,
         )

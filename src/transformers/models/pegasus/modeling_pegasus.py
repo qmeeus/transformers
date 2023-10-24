@@ -16,7 +16,6 @@
 
 import copy
 import math
-import random
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
@@ -81,7 +80,7 @@ def _make_causal_mask(
     Make causal mask used for bi-directional self-attention.
     """
     bsz, tgt_len = input_ids_shape
-    mask = torch.full((tgt_len, tgt_len), torch.tensor(torch.finfo(dtype).min, device=device), device=device)
+    mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
     mask_cond = torch.arange(mask.size(-1), device=device)
     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
     mask = mask.to(dtype)
@@ -323,7 +322,7 @@ class PegasusEncoderLayer(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(seq_len, batch, embed_dim)`
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
             attention_mask (`torch.FloatTensor`): attention mask of size
                 `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
             layer_head_mask (`torch.FloatTensor`): mask for attention heads in a given layer of size
@@ -758,6 +757,7 @@ class PegasusEncoder(PegasusPreTrainedModel):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
+            self.warn_if_padding_and_no_attention_mask(input_ids, attention_mask)
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
         elif inputs_embeds is not None:
@@ -793,8 +793,13 @@ class PegasusEncoder(PegasusPreTrainedModel):
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
-            dropout_probability = random.uniform(0, 1)
-            if self.training and (dropout_probability < self.layerdrop):  # skip the layer
+            to_drop = False
+            if self.training:
+                dropout_probability = torch.rand([])
+                if dropout_probability < self.layerdrop:  # skip the layer
+                    to_drop = True
+
+            if to_drop:
                 layer_outputs = (None, None)
             else:
                 if self.gradient_checkpointing and self.training:
@@ -1074,9 +1079,10 @@ class PegasusDecoder(PegasusPreTrainedModel):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            dropout_probability = random.uniform(0, 1)
-            if self.training and (dropout_probability < self.layerdrop):
-                continue
+            if self.training:
+                dropout_probability = torch.rand([])
+                if dropout_probability < self.layerdrop:
+                    continue
 
             past_key_value = past_key_values[idx] if past_key_values is not None else None
 
@@ -1151,7 +1157,7 @@ class PegasusDecoder(PegasusPreTrainedModel):
     PEGASUS_START_DOCSTRING,
 )
 class PegasusModel(PegasusPreTrainedModel):
-    _keys_to_ignore_on_load_missing = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight"]
+    _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight"]
 
     def __init__(self, config: PegasusConfig):
         super().__init__(config)
@@ -1303,15 +1309,8 @@ class PegasusModel(PegasusPreTrainedModel):
 )
 class PegasusForConditionalGeneration(PegasusPreTrainedModel):
     base_model_prefix = "model"
-    _keys_to_ignore_on_load_missing = [
-        r"final_logits_bias",
-        r"encoder.version",
-        r"decoder.version",
-        r"lm_head.weight",
-        r"embed_positions.weight",
-        "encoder.embed_tokens.weight",
-        "decoder.embed_tokens.weight",
-    ]
+    _keys_to_ignore_on_load_missing = ["final_logits_bias"]
+    _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
 
     def __init__(self, config: PegasusConfig):
         super().__init__(config)
@@ -1328,9 +1327,9 @@ class PegasusForConditionalGeneration(PegasusPreTrainedModel):
     def get_decoder(self):
         return self.model.get_decoder()
 
-    def resize_token_embeddings(self, new_num_tokens: int) -> nn.Embedding:
-        new_embeddings = super().resize_token_embeddings(new_num_tokens)
-        self._resize_final_logits_bias(new_num_tokens)
+    def resize_token_embeddings(self, new_num_tokens: int, pad_to_multiple_of: Optional[int] = None) -> nn.Embedding:
+        new_embeddings = super().resize_token_embeddings(new_num_tokens, pad_to_multiple_of)
+        self._resize_final_logits_bias(new_embeddings.weight.shape[0])
         return new_embeddings
 
     def _resize_final_logits_bias(self, new_num_tokens: int) -> None:
@@ -1467,7 +1466,16 @@ class PegasusForConditionalGeneration(PegasusPreTrainedModel):
     ):
         # cut decoder_input_ids if past is used
         if past_key_values is not None:
-            decoder_input_ids = decoder_input_ids[:, -1:]
+            past_length = past_key_values[0][0].shape[2]
+
+            # Some generation methods already pass only the last input ID
+            if decoder_input_ids.shape[1] > past_length:
+                remove_prefix_length = past_length
+            else:
+                # Default to old behavior: keep only final ID
+                remove_prefix_length = decoder_input_ids.shape[1] - 1
+
+            decoder_input_ids = decoder_input_ids[:, remove_prefix_length:]
 
         return {
             "input_ids": None,  # encoder_outputs is defined. input_ids not needed
@@ -1490,7 +1498,8 @@ class PegasusForConditionalGeneration(PegasusPreTrainedModel):
         for layer_past in past_key_values:
             # cached cross_attention states don't have to be reordered -> they are always the same
             reordered_past += (
-                tuple(past_state.index_select(0, beam_idx) for past_state in layer_past[:2]) + layer_past[2:],
+                tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past[:2])
+                + layer_past[2:],
             )
         return reordered_past
 
@@ -1511,7 +1520,7 @@ class PegasusDecoderWrapper(PegasusPreTrainedModel):
 
 
 class PegasusForCausalLM(PegasusPreTrainedModel):
-    _keys_to_ignore_on_load_missing = ["lm_head.weight"]
+    _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         config = copy.deepcopy(config)
@@ -1719,7 +1728,16 @@ class PegasusForCausalLM(PegasusPreTrainedModel):
             attention_mask = input_ids.new_ones(input_ids.shape)
 
         if past_key_values:
-            input_ids = input_ids[:, -1:]
+            past_length = past_key_values[0][0].shape[2]
+
+            # Some generation methods already pass only the last input ID
+            if input_ids.shape[1] > past_length:
+                remove_prefix_length = past_length
+            else:
+                # Default to old behavior: keep only final ID
+                remove_prefix_length = input_ids.shape[1] - 1
+
+            input_ids = input_ids[:, remove_prefix_length:]
         # first step, decoder_cached_states are empty
         return {
             "input_ids": input_ids,  # encoder_outputs is defined. input_ids not needed
@@ -1732,5 +1750,7 @@ class PegasusForCausalLM(PegasusPreTrainedModel):
     def _reorder_cache(past_key_values, beam_idx):
         reordered_past = ()
         for layer_past in past_key_values:
-            reordered_past += (tuple(past_state.index_select(0, beam_idx) for past_state in layer_past),)
+            reordered_past += (
+                tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
+            )
         return reordered_past

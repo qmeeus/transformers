@@ -25,7 +25,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from ...activations import ACT2FN
-from ...deepspeed import is_deepspeed_zero3_enabled
+from ...integrations.deepspeed import is_deepspeed_zero3_enabled
 from ...modeling_outputs import (
     BaseModelOutput,
     CausalLMOutput,
@@ -356,15 +356,19 @@ class Wav2Vec2ConformerPositionalConvEmbedding(nn.Module):
             groups=config.num_conv_pos_embedding_groups,
         )
 
+        weight_norm = nn.utils.weight_norm
+        if hasattr(nn.utils.parametrizations, "weight_norm"):
+            weight_norm = nn.utils.parametrizations.weight_norm
+
         if is_deepspeed_zero3_enabled():
             import deepspeed
 
             with deepspeed.zero.GatheredParameters(self.conv.weight, modifier_rank=0):
-                self.conv = nn.utils.weight_norm(self.conv, name="weight", dim=2)
+                self.conv = weight_norm(self.conv, name="weight", dim=2)
             deepspeed.zero.register_external_parameter(self, self.conv.weight_v)
             deepspeed.zero.register_external_parameter(self, self.conv.weight_g)
         else:
-            self.conv = nn.utils.weight_norm(self.conv, name="weight", dim=2)
+            self.conv = weight_norm(self.conv, name="weight", dim=2)
 
         self.padding = Wav2Vec2ConformerSamePadLayer(config.num_conv_pos_embeddings)
         self.activation = ACT2FN[config.feat_extract_activation]
@@ -402,13 +406,15 @@ class Wav2Vec2ConformerRotaryPositionalEmbedding(nn.Module):
             return self.cached_rotary_positional_embedding
 
         self.cached_sequence_length = sequence_length
+        # Embeddings are computed in the dtype of the inv_freq constant
         time_stamps = torch.arange(sequence_length).type_as(self.inv_freq)
         freqs = torch.einsum("i,j->ij", time_stamps, self.inv_freq)
         embeddings = torch.cat((freqs, freqs), dim=-1)
 
         cos_embeddings = embeddings.cos()[:, None, None, :]
         sin_embeddings = embeddings.sin()[:, None, None, :]
-        self.cached_rotary_positional_embedding = torch.stack([cos_embeddings, sin_embeddings])
+        # Computed embeddings are cast to the dtype of the hidden state inputs
+        self.cached_rotary_positional_embedding = torch.stack([cos_embeddings, sin_embeddings]).type_as(hidden_states)
         return self.cached_rotary_positional_embedding
 
 
@@ -578,7 +584,7 @@ class Wav2Vec2ConformerConvolutionModule(nn.Module):
         if (config.conv_depthwise_kernel_size - 1) % 2 == 1:
             raise ValueError("`config.conv_depthwise_kernel_size` should be a odd number for 'SAME' padding")
         self.layer_norm = nn.LayerNorm(config.hidden_size)
-        self.pointwise_conv1 = torch.nn.Conv1d(
+        self.pointwise_conv1 = nn.Conv1d(
             config.hidden_size,
             2 * config.hidden_size,
             kernel_size=1,
@@ -586,8 +592,8 @@ class Wav2Vec2ConformerConvolutionModule(nn.Module):
             padding=0,
             bias=False,
         )
-        self.glu = torch.nn.GLU(dim=1)
-        self.depthwise_conv = torch.nn.Conv1d(
+        self.glu = nn.GLU(dim=1)
+        self.depthwise_conv = nn.Conv1d(
             config.hidden_size,
             config.hidden_size,
             config.conv_depthwise_kernel_size,
@@ -596,9 +602,9 @@ class Wav2Vec2ConformerConvolutionModule(nn.Module):
             groups=config.hidden_size,
             bias=False,
         )
-        self.batch_norm = torch.nn.BatchNorm1d(config.hidden_size)
+        self.batch_norm = nn.BatchNorm1d(config.hidden_size)
         self.activation = ACT2FN[config.hidden_act]
-        self.pointwise_conv2 = torch.nn.Conv1d(
+        self.pointwise_conv2 = nn.Conv1d(
             config.hidden_size,
             config.hidden_size,
             kernel_size=1,
@@ -606,7 +612,7 @@ class Wav2Vec2ConformerConvolutionModule(nn.Module):
             padding=0,
             bias=False,
         )
-        self.dropout = torch.nn.Dropout(config.conformer_conv_dropout)
+        self.dropout = nn.Dropout(config.conformer_conv_dropout)
 
     def forward(self, hidden_states):
         hidden_states = self.layer_norm(hidden_states)
@@ -792,7 +798,7 @@ class Wav2Vec2ConformerEncoderLayer(nn.Module):
 
         # Self-Attention
         self.self_attn_layer_norm = nn.LayerNorm(embed_dim)
-        self.self_attn_dropout = torch.nn.Dropout(dropout)
+        self.self_attn_dropout = nn.Dropout(dropout)
         self.self_attn = Wav2Vec2ConformerSelfAttention(config)
 
         # Conformer Convolution
@@ -899,7 +905,7 @@ class Wav2Vec2ConformerEncoder(nn.Module):
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
-            dropout_probability = np.random.uniform(0, 1)
+            dropout_probability = torch.rand([])
 
             skip_the_layer = True if self.training and (dropout_probability < self.config.layerdrop) else False
             if not skip_the_layer or deepspeed_zero3_is_enabled:
@@ -1083,7 +1089,6 @@ class Wav2Vec2ConformerPreTrainedModel(PreTrainedModel):
     config_class = Wav2Vec2ConformerConfig
     base_model_prefix = "wav2vec2_conformer"
     main_input_name = "input_values"
-    _keys_to_ignore_on_load_missing = [r"position_ids"]
     supports_gradient_checkpointing = True
 
     def _init_weights(self, module):
@@ -1600,11 +1605,13 @@ class Wav2Vec2ConformerForPreTraining(Wav2Vec2ConformerPreTrainedModel):
 )
 class Wav2Vec2ConformerForCTC(Wav2Vec2ConformerPreTrainedModel):
     # Copied from transformers.models.wav2vec2.modeling_wav2vec2.Wav2Vec2ForCTC.__init__ with Wav2Vec2->Wav2Vec2Conformer,wav2vec2->wav2vec2_conformer
-    def __init__(self, config):
+    def __init__(self, config, target_lang: Optional[str] = None):
         super().__init__(config)
 
         self.wav2vec2_conformer = Wav2Vec2ConformerModel(config)
         self.dropout = nn.Dropout(config.final_dropout)
+
+        self.target_lang = target_lang
 
         if config.vocab_size is None:
             raise ValueError(

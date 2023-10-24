@@ -39,7 +39,7 @@ jobs:
     strategy:
       matrix:
         machine_type: [single-gpu, multi-gpu]
-    runs-on: ${{ format('{0}-{1}', matrix.machine_type, 'docker-past-ci') }}
+    runs-on: ['${{ matrix.machine_type }}', nvidia-gpu, t4, past-ci]
     container:
       image: huggingface/transformers-all-latest-torch-nightly-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -54,7 +54,7 @@ jobs:
     strategy:
       matrix:
         machine_type: [single-gpu, multi-gpu]
-    runs-on: ${{ format('{0}-{1}', matrix.machine_type, 'docker-past-ci') }}
+    runs-on: ['${{ matrix.machine_type }}', nvidia-gpu, t4, past-ci]
     container:
       image: huggingface/transformers-all-latest-torch-nightly-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -94,7 +94,7 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machine_type: [single-gpu]
-    runs-on: ${{ format('{0}-{1}', matrix.machine_type, 'docker-past-ci') }}
+    runs-on: ['${{ matrix.machine_type }}', nvidia-gpu, t4, past-ci]
     container:
       image: huggingface/transformers-all-latest-torch-nightly-gpu
       options: --gpus 0 --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -114,6 +114,10 @@ jobs:
       - name: Update clone
         working-directory: /transformers
         run: git fetch && git checkout ${{ github.sha }}
+
+      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
+        working-directory: /transformers
+        run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
 
       - name: NVIDIA-SMI
         run: |
@@ -151,7 +155,7 @@ jobs:
       matrix:
         folders: ${{ fromJson(needs.setup.outputs.matrix) }}
         machine_type: [multi-gpu]
-    runs-on: ${{ format('{0}-{1}', matrix.machine_type, 'docker-past-ci') }}
+    runs-on: ['${{ matrix.machine_type }}', nvidia-gpu, t4, past-ci]
     container:
       image: huggingface/transformers-all-latest-torch-nightly-gpu
       options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
@@ -171,6 +175,10 @@ jobs:
       - name: Update clone
         working-directory: /transformers
         run: git fetch && git checkout ${{ github.sha }}
+
+      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
+        working-directory: /transformers
+        run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
 
       - name: NVIDIA-SMI
         run: |
@@ -207,7 +215,7 @@ jobs:
       fail-fast: false
       matrix:
         machine_type: [single-gpu, multi-gpu]
-    runs-on: ${{ format('{0}-{1}', matrix.machine_type, 'docker-past-ci') }}
+    runs-on: ['${{ matrix.machine_type }}', nvidia-gpu, t4, past-ci]
     needs: setup
     container:
       image: huggingface/transformers-pytorch-deepspeed-nightly-gpu
@@ -216,6 +224,10 @@ jobs:
       - name: Update clone
         working-directory: /workspace/transformers
         run: git fetch && git checkout ${{ github.sha }}
+
+      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
+        working-directory: /workspace/transformers
+        run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
 
       - name: Remove cached torch extensions
         run: rm -rf /github/home/.cache/torch_extensions/
