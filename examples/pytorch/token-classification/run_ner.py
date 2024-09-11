@@ -22,14 +22,16 @@ Fine-tuning the library models for token classification.
 import logging
 import os
 import sys
+import torch
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 import datasets
 import evaluate
 import numpy as np
-from datasets import ClassLabel, load_dataset
+import warnings
+from datasets import ClassLabel, load_dataset, Dataset, DatasetDict, concatenate_datasets
 
 import transformers
 from transformers import (
@@ -47,6 +49,7 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
+from tner import get_dataset
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -211,14 +214,80 @@ class DataTrainingArguments:
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
             raise ValueError("Need either a dataset name or a training/validation file.")
-        else:
-            if self.train_file is not None:
-                extension = self.train_file.split(".")[-1]
-                assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
-            if self.validation_file is not None:
-                extension = self.validation_file.split(".")[-1]
-                assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
+        # else:
+        #     if self.train_file is not None:
+        #         extension = self.train_file.split(".")[-1]
+        #         assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
+        #     if self.validation_file is not None:
+        #         extension = self.validation_file.split(".")[-1]
+        #         assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
         self.task_name = self.task_name.lower()
+
+
+def decode_ner_wrapper(tokenizer, label_to_id, errors="warn"):
+
+    id2label = {i: label for label, i in label_to_id.items()}
+    pad_token_id = tokenizer.pad_token_id
+    o_token_id = label_to_id["O"]
+
+    def decode_one(token_ids:List[int], tag_ids:List[int]) -> List[tuple[str, str]]:
+        """
+        token_ids: List[int]: 1-d vector
+        tag_ids: List[int]: 1-d vector
+        : returns : List[tuple[str, str]] list of pairs (entity tag, entity string)
+        """
+        if isinstance(token_ids, list):
+            token_ids = np.array(token_ids)
+        if isinstance(tag_ids, list):
+            tag_ids = np.array(tag_ids)
+        if torch.is_tensor(token_ids):
+            token_ids = token_ids.numpy()
+        if torch.is_tensor(tag_ids):
+            tag_ids = tag_ids.numpy()
+
+        tag_ids = tag_ids[:len(token_ids)]
+        if not tag_ids.shape == token_ids.shape:
+            import ipdb; ipdb.set_trace()
+            raise ValueError("Length mismatch, please debug")
+
+        # Compute the token mask, i.e. all the non-special tokens
+        token_mask = ~np.array(tokenizer.get_special_tokens_mask(token_ids, already_has_special_tokens=True), dtype=bool)
+        token_ids = token_ids[token_mask]
+        tag_ids = tag_ids[token_mask]
+
+        # Compute the entity mask, i.e. all the entities that are not "O"
+        entity_mask = tag_ids != o_token_id
+        entity_tokens = token_ids[entity_mask]
+        entity_tags = tag_ids[entity_mask]
+
+        entities = []
+        for token_id, tag_id in zip(entity_tokens, entity_tags):
+            try:
+                bi_marker, tag = id2label[tag_id].split("-")
+            except Exception as e:
+                print("vocab_size:", len(id2label), entity_tags)
+                raise e
+            if bi_marker == "I":
+                if not(entities) or tag != entities[-1][0]:
+                    msg = f"I-{tag} detected that does not follow B-{tag}"
+                    if errors == "raise":
+                        raise TypeError(msg)
+                    elif errors == "warn":
+                        warnings.warn(msg)
+                elif not(entities):
+                    bi_marker = "B"
+                if bi_marker == "I":
+                    entities[-1][-1].append(token_id)
+
+            if bi_marker == "B":
+                entities.append((tag, [token_id]))
+
+        return [(typ, tokenizer.decode(tokens).strip()) for typ, tokens in entities]
+
+    def decode_many(token_ids:List[List[int]], tag_ids:List[List[int]]) -> List[List[tuple[str, str]]]:
+        return [decode_one(ids, tags) for ids, tags in zip(token_ids, tag_ids)]
+
+    return decode_many
 
 
 def main():
@@ -300,13 +369,32 @@ def main():
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
     if data_args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(
-            data_args.dataset_name,
-            data_args.dataset_config_name,
-            cache_dir=model_args.cache_dir,
-            token=model_args.token,
-        )
+        if "+" in data_args.dataset_config_name:
+            raw_datasets = [
+                load_dataset(
+                    data_args.dataset_name,
+                    config_name,
+                    cache_dir=model_args.cache_dir,
+                    token=model_args.token,
+                ) for config_name in data_args.dataset_config_name.split("+")
+            ]
+            raw_datasets = DatasetDict({
+                split: concatenate_datasets([
+                    _data[split] for _data in raw_datasets
+                ]) for split in raw_datasets[0]
+            })
+            raw_datasets["train"] = raw_datasets["train"].shuffle(seed=1903)
+
+        else:
+            # Downloading and loading a dataset from the hub.
+            raw_datasets = load_dataset(
+                data_args.dataset_name,
+                data_args.dataset_config_name,
+                cache_dir=model_args.cache_dir,
+                token=model_args.token,
+            )
+        label_list = None
+        label_to_id = None
     else:
         data_files = {}
         if data_args.train_file is not None:
@@ -318,7 +406,13 @@ def main():
         if data_args.test_file is not None:
             data_files["test"] = data_args.test_file
             extension = data_args.test_file.split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir)
+
+        raw_datasets, label_to_id = get_dataset(local_dataset=data_files)
+        raw_datasets = DatasetDict({
+            subset: Dataset.from_dict(data) for subset, data in raw_datasets.items()
+        })
+        label_list = list(label_to_id)
+        # raw_datasets = load_dataset(extension, data_files=data_files, cache_dir=model_args.cache_dir)
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.
 
@@ -353,15 +447,16 @@ def main():
         label_list.sort()
         return label_list
 
-    # If the labels are of type ClassLabel, they are already integers and we have the map stored somewhere.
-    # Otherwise, we have to get the list of labels manually.
-    labels_are_int = isinstance(features[label_column_name].feature, ClassLabel)
-    if labels_are_int:
-        label_list = features[label_column_name].feature.names
-        label_to_id = {i: i for i in range(len(label_list))}
-    else:
-        label_list = get_label_list(raw_datasets["train"][label_column_name])
-        label_to_id = {l: i for i, l in enumerate(label_list)}
+    if label_list is None:
+        # If the labels are of type ClassLabel, they are already integers and we have the map stored somewhere.
+        # Otherwise, we have to get the list of labels manually.
+        labels_are_int = isinstance(features[label_column_name].feature, ClassLabel)
+        if labels_are_int:
+            label_list = features[label_column_name].feature.names
+            label_to_id = {i: i for i in range(len(label_list))}
+        else:
+            label_list = get_label_list(raw_datasets["train"][label_column_name])
+            label_to_id = {l: i for i, l in enumerate(label_list)}
 
     num_labels = len(label_list)
 
@@ -475,12 +570,20 @@ def main():
                     label_ids.append(-100)
                 # We set the label for the first token of each word.
                 elif word_idx != previous_word_idx:
-                    label_ids.append(label_to_id[label[word_idx]])
+                    label_id = label[word_idx]
+                    if type(label_id) is str:
+                        if "_" in label_id:
+                            label_id = label_id.replace("_", " ")
+                        label_id = label_to_id[label_id]
+                    label_ids.append(label_id)
                 # For the other tokens in a word, we set the label to either the current label or -100, depending on
                 # the label_all_tokens flag.
                 else:
                     if data_args.label_all_tokens:
-                        label_ids.append(b_to_i_label[label_to_id[label[word_idx]]])
+                        label_id = label[word_idx]
+                        if type(label_id) is str:
+                            label_id = label_to_id[label_id]
+                        label_ids.append(b_to_i_label[label_id])
                     else:
                         label_ids.append(-100)
                 previous_word_idx = word_idx
@@ -625,6 +728,13 @@ def main():
 
         predictions, labels, metrics = trainer.predict(predict_dataset, metric_key_prefix="predict")
         predictions = np.argmax(predictions, axis=2)
+
+        decode_ner = decode_ner_wrapper(tokenizer, label_to_id)
+        token_ids = list(predict_dataset["input_ids"])
+        decoded_tags = decode_ner(token_ids, predictions)
+        decoded_labels = decode_ner(token_ids, labels)
+        metrics["NER_F1"], metrics["NER_LABEL_F1"] = ner_scores(decoded_tags, decoded_labels)
+        import ipdb; ipdb.set_trace()
 
         # Remove ignored index (special tokens)
         true_predictions = [

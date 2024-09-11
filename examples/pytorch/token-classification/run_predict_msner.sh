@@ -12,20 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-python run_ner.py \
-  --model_name_or_path roberta-base \
+set -u
+LANG=$1
+ipdb run_ner.py \
+  --model_name_or_path roberta-msner \
   --dataset_name qmeeus/MSNER-nlp \
-  --dataset_config_name en \
+  --dataset_config_name $LANG \
   --label_column_name tags \
   --text_column_name tokens \
-  --label_all_tokens \
-  --evaluation_strategy "steps" \
-  --eval_steps 1000 \
-  --save_steps 1000 \
-  --save_total_limit 10 \
-  --load_best_model_at_end \
-  --metric_for_best_model "f1" \
-  --greater_is_better "true" \
-  --output_dir slue_vp_en \
-  --do_train \
-  --do_eval
+  --output_dir roberta-msner/predict/$LANG \
+  --do_train="false" \
+  --do_eval="false" \
+  --do_predict
